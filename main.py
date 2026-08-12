@@ -13,22 +13,33 @@ app = FastAPI()
 
 # Bot token được truyền qua path param của webhook: POST /webhook/{bot_token}
 WEBHOOK_PATH = "/webhook/{bot_token}"
-TAGS = [
-    "Vừa Mới Quay Tay",
-    "Tè Quần Sáng Nay",
-    "Ngồi Trúng Shit Chó",
-    "Đang Bận Sóc Lọ",
-    "Tao Bị Thiểu Năng",
-    "Thích Ngủ Với Vợ Bạn",
-    "Học Sinh Cấp 2",
-    "Fan Của Thằng Lồn",
-    "Đang Bận Ăn Cứt",
-    "Thích Ngủ Với Chó",
-    "Hay Bị Mộng Tinh",
-    "Chiến Thần Thẩm Du",
-    "Thèm Buscu",
-    "Spam Bot Của Thằng Lồn",
-    "Tây Môn Khánh",
+TAGS = ["VừaĐuỵchVợBạn", "Quên Chùi Đuých", "Vừa Tè Bậy", "Thèm Cặc"]
+TAGS_1 = [
+    "Thích",
+    "Cư Sĩ",
+    "Thích Nữ",
+    "Đạo Hữu",
+    "Tôn Giả",
+    "Chiến Thần",
+    "Chí Tôn",
+    "Tiên Sinh",
+    "Hành Giả",
+    "Trùm",
+]
+TAGS_2 = [
+    "Quay Tay",
+    "Tè Bậy",
+    "Sóc Lọ",
+    "Thiểu Năng",
+    "Xem Loèn",
+    "Thẩm Du",
+    "Buscu",
+    "Mặt Lồn",
+    "Mê Cức",
+    "Làm Đũy",
+    "Thèm Cặc",
+    "Óc Lồn",
+    "Mộng Du",
 ]
 
 # Cache user_id của bot theo token (hỗ trợ nhiều bot trên cùng một server)
@@ -177,7 +188,11 @@ async def webhook(request: Request, bot_token: str):
             return {"ok": True}
 
         # Gắn nhãn (tag) cho người dùng không phải admin
-        new_tag = random.choice(TAGS)
+        t1 = random.choice(TAGS_1)
+        t2 = random.choice(TAGS_2)
+        tfinal = f"{t1} {t2}"
+        taio = random.choice(TAGS)
+        new_tag = random.choice([tfinal, taio])
         try:
             result = await set_user_tag(bot_token, chat_id, user_id, new_tag)
             if not result.get("ok"):
