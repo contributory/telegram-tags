@@ -42,13 +42,8 @@ const USER_TAG_COOLDOWN_SECONDS = 60;
 
 // State toàn cục (sẽ reset giữa các cold start trong serverless, chấp nhận được)
 const _buckets = new Map<string, TokenBucket>();
-const _userTagLocks = new Map<string, Promise<void>>();
 const _userLastTag = new Map<string, number>();
 const _botUserIdCache = new Map<string, number>();
-
-function lockKey(botToken: string, chatId: number, userId: number): string {
-  return `${botToken}:${chatId}:${userId}`;
-}
 
 // Token bucket đơn giản, async để chờ refill khi cạn
 class TokenBucket {
@@ -178,7 +173,7 @@ async function handleWebhook(botToken: string, body: any): Promise<Response> {
     return json({ ok: true });
   }
 
-  const key = lockKey(botToken, chatId, userId);
+  const key = `${botToken}:${chatId}:${userId}`;
   const now = performance.now() / 1000;
   const last = _userLastTag.get(key) ?? 0;
 
@@ -187,37 +182,24 @@ async function handleWebhook(botToken: string, body: any): Promise<Response> {
     return json({ ok: true });
   }
 
-  // Khóa theo chuỗi promise để tránh 2 update cùng lúc đổi trùng
-  const prev = _userTagLocks.get(key) ?? Promise.resolve();
-  const next = prev.then(async () => {
-    const now2 = performance.now() / 1000;
-    if (now2 - (_userLastTag.get(key) ?? 0) < USER_TAG_COOLDOWN_SECONDS) {
-      return;
+  const t1 = TAGS_1[Math.floor(Math.random() * TAGS_1.length)];
+  const t2 = TAGS_2[Math.floor(Math.random() * TAGS_2.length)];
+  const tFinal = `${t1} ${t2}`;
+  const taio = TAGS[Math.floor(Math.random() * TAGS.length)];
+  const newTag = Math.random() < 0.5 ? tFinal : taio;
+  try {
+    const result = await setUserTag(botToken, chatId, userId, newTag);
+    if (!result?.ok) {
+      console.warn(`setChatMemberTag thất bại: ${result?.description}`);
+    } else {
+      _userLastTag.set(key, performance.now() / 1000);
+      console.log(
+        `Đã gắn nhãn cho user ${userId} thành '${newTag}' trong nhóm ${chatId}`,
+      );
     }
-    const t1 = TAGS_1[Math.floor(Math.random() * TAGS_1.length)];
-    const t2 = TAGS_2[Math.floor(Math.random() * TAGS_2.length)];
-    const tFinal = `${t1} ${t2}`;
-    const taio = TAGS[Math.floor(Math.random() * TAGS.length)];
-    const newTag = Math.random() < 0.5 ? tFinal : taio;
-    try {
-      const result = await setUserTag(botToken, chatId, userId, newTag);
-      if (!result?.ok) {
-        console.warn(`setChatMemberTag thất bại: ${result?.description}`);
-      } else {
-        _userLastTag.set(key, performance.now() / 1000);
-        console.log(
-          `Đã gắn nhãn cho user ${userId} thành '${newTag}' trong nhóm ${chatId}`,
-        );
-      }
-    } catch (e) {
-      console.error(`Lỗi khi gắn nhãn cho user ${userId}: ${e}`);
-    }
-  });
-  // Giữ lại lock, dọn sau khi xong
-  _userTagLocks.set(
-    key,
-    next.then(() => {}).catch(() => {}),
-  );
+  } catch (e) {
+    console.error(`Lỗi khi gắn nhãn cho user ${userId}: ${e}`);
+  }
 
   return json({ ok: true });
 }
