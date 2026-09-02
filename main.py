@@ -186,7 +186,7 @@ async def webhook(request: Request, bot_token: str):
         t2 = random.choice(TAGS_2)
         tfinal = f"{t1} {t2}"
         taio = random.choice(TAGS)
-        new_tag = random.choice([tfinal, taio])
+        new_tag = random.choice([tfinal, taio, tfinal])
         try:
             result = await set_user_tag(bot_token, chat_id, user_id, new_tag)
             if not result.get("ok"):
