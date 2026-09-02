@@ -17,7 +17,7 @@ TAGS = ["VừaĐuỵchVợBạn", "Quên Chùi Đuých", "Vừa Tè Bậy", "Th�
 TAGS_1 = [
     "Thích",
     "Cư Sĩ",
-    "Thích Nữ",
+    "Nữ Đế",
     "Đạo Hữu",
     "Tôn Giả",
     "Chiến Thần",
