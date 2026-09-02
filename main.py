@@ -13,33 +13,27 @@ app = FastAPI()
 
 # Bot token được truyền qua path param của webhook: POST /webhook/{bot_token}
 WEBHOOK_PATH = "/webhook/{bot_token}"
-TAGS = ["VừaĐuỵchVợBạn", "Quên Chùi Đuých", "Vừa Tè Bậy", "Thèm Cặc"]
-TAGS_1 = [
-    "Thích",
-    "Cư Sĩ",
-    "Nữ Đế",
-    "Đạo Hữu",
-    "Tôn Giả",
-    "Chiến Thần",
-    "Chí Tôn",
-    "Tiên Sinh",
-    "Hành Giả",
-    "Trùm",
+TAGS = [
+    "Đuỵch Vợ Bạn",
+    "Quên Chùi Đít",
+    "Tè Bậy",
+    "Đang Thèm Cặc",
+    "Bị Thiểu Năng",
+    "Tu Tiên Nứng Lồn",
+    "Ăn Nhầm Cức",
 ]
+TAGS_1 = ["Đang", "Vạn Kiếp", "Vừa", "Muốn", "Mê", "Cần", "Thích"]
 TAGS_2 = [
     "Quay Tay",
-    "Tè Bậy",
     "Sóc Lọ",
-    "Thiểu Năng",
-    "Xem Loèn",
     "Thẩm Du",
     "Buscu",
-    "Mặt Lồn",
-    "Mê Cức",
+    "Bú Lồn",
     "Làm Đũy",
-    "Thèm Cặc",
-    "Óc Lồn",
-    "Mộng Du",
+    "Đá Phò",
+    "Tè Bậy",
+    "Tè Dầm",
+    "Ăn Cức",
 ]
 
 # Cache user_id của bot theo token (hỗ trợ nhiều bot trên cùng một server)
