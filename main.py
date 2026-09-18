@@ -1,23 +1,18 @@
 import asyncio
+import json
 import logging
 import os
 import platform
 import random
 import sys
 import time
+from urllib.parse import unquote
 
 import httpx
-from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
-from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse
-from starlette.routing import Route
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Bot token được truyền qua path param của webhook: POST /webhook/{bot_token}
-WEBHOOK_PATH = "/webhook/{bot_token}"
 TAGS = [
     "Đuỵch Vợ Bạn",
     "Quên Chùi Đít",
@@ -41,14 +36,10 @@ TAGS_2 = [
     "Ăn Cức",
 ]
 
-# Cache user_id của bot theo token (hỗ trợ nhiều bot trên cùng một server)
 _bot_user_id_cache: dict[str, int] = {}
 
-# --- Cơ chế khóa / giới hạn tốc độ để tránh spam Telegram API (bị 429) ---
-# Telegram giới hạn ~30 request/giây/bot, giữ dưới ngưỡng để an toàn.
 RATE_LIMIT_PER_SEC = 25
 BUCKET_CAPACITY = 25
-# Chỉ đổi nhãn tối đa 1 lần / 60 giây / người dùng (tránh spam setChatMemberTag)
 USER_TAG_COOLDOWN_SECONDS = 60
 
 _buckets: dict[str, "TokenBucket"] = {}
@@ -57,8 +48,6 @@ _user_last_tag: dict[tuple[str, int, int], float] = {}
 
 
 class TokenBucket:
-    """Token bucket giới hạn số request/giây gửi tới Telegram API."""
-
     def __init__(self, rate: float, capacity: int):
         self.rate = rate
         self.capacity = capacity
@@ -90,7 +79,6 @@ def _get_bucket(bot_token: str) -> "TokenBucket":
 
 
 async def telegram_request(bot_token: str, method: str, **params):
-    # Đi qua token bucket trước khi gọi API để tránh bị Telegram giới hạn
     await _get_bucket(bot_token).acquire()
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
     async with httpx.AsyncClient() as client:
@@ -99,7 +87,6 @@ async def telegram_request(bot_token: str, method: str, **params):
 
 
 async def get_bot_user_id(bot_token: str) -> int:
-    """Lấy user_id của bot từ getMe (kèm cache theo token)."""
     if bot_token not in _bot_user_id_cache:
         me = await telegram_request(bot_token, "getMe")
         _bot_user_id_cache[bot_token] = me["result"]["id"]
@@ -107,7 +94,6 @@ async def get_bot_user_id(bot_token: str) -> int:
 
 
 async def is_bot_admin(bot_token: str, chat_id: int) -> bool:
-    """Kiểm tra xem bot có phải admin của nhóm không."""
     bot_user_id = await get_bot_user_id(bot_token)
     result = await telegram_request(
         bot_token, "getChatMember", chat_id=chat_id, user_id=bot_user_id
@@ -117,7 +103,6 @@ async def is_bot_admin(bot_token: str, chat_id: int) -> bool:
 
 
 async def is_user_admin(bot_token: str, chat_id: int, user_id: int) -> bool:
-    """Kiểm tra xem người dùng có phải admin không."""
     result = await telegram_request(
         bot_token, "getChatMember", chat_id=chat_id, user_id=user_id
     )
@@ -126,73 +111,116 @@ async def is_user_admin(bot_token: str, chat_id: int, user_id: int) -> bool:
 
 
 async def set_user_tag(bot_token: str, chat_id: int, user_id: int, tag: str) -> dict:
-    """
-    Gắn nhãn (custom tag / title) cho người dùng trong nhóm bằng API mới
-    setChatMemberTag - cho phép gắn nhãn cho TẤT CẢ thành viên, không chỉ admin.
-    Tag tối đa 16 ký tự.
-    """
     return await telegram_request(
         bot_token, "setChatMemberTag", chat_id=chat_id, user_id=user_id, tag=tag[:16]
     )
 
 
-async def webhook(request: Request):
-    bot_token = request.path_params["bot_token"]
+async def _json_response(send, data, status=200):
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
+
+async def _text_response(send, text, status=200):
+    body = text.encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _read_body(receive):
+    chunks = []
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            continue
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body", False):
+            return b"".join(chunks)
+
+
+def _base_url(scope):
+    headers = {k.lower(): v for k, v in scope.get("headers", [])}
+    host = headers.get(b"x-forwarded-host") or headers.get(b"host") or b"localhost"
+    proto = headers.get(b"x-forwarded-proto")
+    scheme = proto.decode() if proto else scope.get("scheme", "https")
+    return f"{scheme}://{host.decode()}"
+
+
+async def _handle_webhook(bot_token: str, receive, send):
+    raw = await _read_body(receive)
     try:
-        body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        body = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        await _json_response(send, {"detail": "Invalid JSON"}, 400)
+        return
 
     if "message" not in body:
-        return JSONResponse({"ok": True})
+        await _json_response(send, {"ok": True})
+        return
 
     message = body["message"]
     chat = message.get("chat", {})
     chat_id = chat.get("id")
     chat_type = chat.get("type")
 
-    # Chỉ xử lý tin nhắn trong nhóm (group hoặc supergroup)
     if chat_type not in ("group", "supergroup"):
-        return JSONResponse({"ok": True})
+        await _json_response(send, {"ok": True})
+        return
 
     from_user = message.get("from", {})
     user_id = from_user.get("id")
 
-    # Bỏ qua nếu là tin nhắn từ chính bot
     bot_user_id = await get_bot_user_id(bot_token)
     if user_id == bot_user_id:
-        return JSONResponse({"ok": True})
+        await _json_response(send, {"ok": True})
+        return
 
-    # Kiểm tra bot có phải admin không
     if not await is_bot_admin(bot_token, chat_id):
         logger.info("Bot không phải admin ở nhóm %s, bỏ qua.", chat_id)
-        return JSONResponse({"ok": True})
+        await _json_response(send, {"ok": True})
+        return
 
-    # Kiểm tra người gửi có phải admin không
     if await is_user_admin(bot_token, chat_id, user_id):
         logger.info("Người dùng %s là admin, không đổi nhãn.", user_id)
-        return JSONResponse({"ok": True})
+        await _json_response(send, {"ok": True})
+        return
 
-    # Cơ chế khóa: tránh spam đổi nhãn cùng một người dùng
     key = (bot_token, chat_id, user_id)
-
-    # Cooldown: bỏ qua nếu người dùng vừa được đổi nhãn gần đây
     if time.monotonic() - _user_last_tag.get(key, 0.0) < USER_TAG_COOLDOWN_SECONDS:
-        return JSONResponse({"ok": True})
+        await _json_response(send, {"ok": True})
+        return
 
     lock = _user_tag_locks.setdefault(key, asyncio.Lock())
     async with lock:
-        # Kiểm tra lại sau khi giành được lock (tránh đổi trùng khi 2 tin nhắn cùng lúc)
         if time.monotonic() - _user_last_tag.get(key, 0.0) < USER_TAG_COOLDOWN_SECONDS:
-            return JSONResponse({"ok": True})
+            await _json_response(send, {"ok": True})
+            return
 
-        # Gắn nhãn (tag) cho người dùng không phải admin
         t1 = random.choice(TAGS_1)
         t2 = random.choice(TAGS_2)
         tfinal = f"{t1} {t2}"
         taio = random.choice(TAGS)
         new_tag = random.choice([tfinal, taio, tfinal])
+
         try:
             result = await set_user_tag(bot_token, chat_id, user_id, new_tag)
             if not result.get("ok"):
@@ -210,56 +238,58 @@ async def webhook(request: Request):
         except httpx.HTTPError as e:
             logger.error("Lỗi khi gắn nhãn cho user %s: %s", user_id, e)
 
-    return JSONResponse({"ok": True})
+    await _json_response(send, {"ok": True})
 
 
-async def root(request: Request):
-    return JSONResponse({"status": "running", "bot": "Telegram Webhook Bot"})
+async def app(scope, receive, send):
+    if scope["type"] != "http":
+        return
 
+    method = scope.get("method", "GET")
+    path = scope.get("path", "/")
 
-async def os_info(request: Request):
-    """Hiển thị thông tin môi trường chạy dưới dạng raw text."""
-    uname = platform.uname()
-    lines = [
-        f"platform    : {platform.platform()}",
-        f"system      : {uname.system}",
-        f"node        : {uname.node}",
-        f"release     : {uname.release}",
-        f"version     : {uname.version}",
-        f"machine     : {uname.machine}",
-        f"processor   : {uname.processor}",
-        f"python      : {sys.version}",
-        f"executable  : {sys.executable}",
-        f"cpu_count   : {os.cpu_count()}",
-        f"cwd         : {os.getcwd()}",
-        f"pid         : {os.getpid()}",
-        "",
-        "env:",
-    ]
-    for key, value in sorted(os.environ.items()):
-        lines.append(f"  {key}={value}")
-    return PlainTextResponse("\n".join(lines))
+    if method == "GET" and path == "/":
+        await _json_response(send, {"status": "running", "bot": "Telegram Webhook Bot"})
+        return
 
+    if method == "GET" and path == "/os":
+        uname = platform.uname()
+        lines = [
+            f"platform    : {platform.platform()}",
+            f"system      : {uname.system}",
+            f"node        : {uname.node}",
+            f"release     : {uname.release}",
+            f"version     : {uname.version}",
+            f"machine     : {uname.machine}",
+            f"processor   : {uname.processor}",
+            f"python      : {sys.version}",
+            f"executable  : {sys.executable}",
+            f"cpu_count   : {os.cpu_count()}",
+            f"cwd         : {os.getcwd()}",
+            f"pid         : {os.getpid()}",
+            "",
+            "env:",
+        ]
+        for key, value in sorted(os.environ.items()):
+            lines.append(f"  {key}={value}")
+        await _text_response(send, "\n".join(lines))
+        return
 
-async def set_webhook(request: Request):
-    """
-    Đặt webhook cho bot bằng token truyền qua path param (GET).
-    Không dùng env - URL webhook được tự động tạo từ request hiện tại:
-    {base_url}/webhook/{bot_token}
-    """
-    bot_token = request.path_params["bot_token"]
-    base_url = str(request.base_url).rstrip("/")
-    webhook_url = f"{base_url}/webhook/{bot_token}"
-    result = await telegram_request(bot_token, "setWebhook", url=webhook_url)
-    logger.info("Đã đặt webhook cho bot: %s", webhook_url)
-    return JSONResponse(result)
+    webhook_prefix = "/webhook/"
+    if method == "POST" and path.startswith(webhook_prefix):
+        bot_token = unquote(path[len(webhook_prefix):])
+        if bot_token:
+            await _handle_webhook(bot_token, receive, send)
+            return
 
+    setwebhook_prefix = "/setwebhook/"
+    if method == "GET" and path.startswith(setwebhook_prefix):
+        bot_token = unquote(path[len(setwebhook_prefix):])
+        if bot_token:
+            webhook_url = f"{_base_url(scope)}/webhook/{bot_token}"
+            result = await telegram_request(bot_token, "setWebhook", url=webhook_url)
+            logger.info("Đã đặt webhook cho bot: %s", webhook_url)
+            await _json_response(send, result)
+            return
 
-app = Starlette(
-    routes=[
-        Route(WEBHOOK_PATH, webhook, methods=["POST"]),
-        Route("/", root, methods=["GET"]),
-        Route("/os", os_info, methods=["GET"]),
-        Route("/setwebhook/{bot_token}", set_webhook, methods=["GET"]),
-    ]
-)
+    await _json_response(send, {"detail": "Not Found"}, 404)
