@@ -37,6 +37,7 @@ TAGS_2 = [
 ]
 
 _bot_user_id_cache: dict[str, int] = {}
+_bot_commands_registered: set[str] = set()
 
 RATE_LIMIT_PER_SEC = 25
 BUCKET_CAPACITY = 25
@@ -116,6 +117,67 @@ async def set_user_tag(bot_token: str, chat_id: int, user_id: int, tag: str) -> 
     )
 
 
+async def ensure_bot_commands(bot_token: str) -> None:
+    if bot_token in _bot_commands_registered:
+        return
+
+    result = await telegram_request(
+        bot_token,
+        "setMyCommands",
+        commands=[
+            {
+                "command": "checkwebhook",
+                "description": "Kiểm tra trạng thái webhook",
+            }
+        ],
+    )
+    if result.get("ok"):
+        _bot_commands_registered.add(bot_token)
+    else:
+        logger.warning("setMyCommands thất bại: %s", result.get("description"))
+
+
+def _message_command(message: dict) -> str | None:
+    text = message.get("text")
+    if not isinstance(text, str) or not text.startswith("/"):
+        return None
+    return text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+
+
+async def handle_checkwebhook(bot_token: str, message: dict) -> None:
+    chat_id = message.get("chat", {}).get("id")
+    if chat_id is None:
+        return
+
+    info = await telegram_request(bot_token, "getWebhookInfo")
+    if not info.get("ok"):
+        text = (
+            "⚠️ Lệnh đã đến được bot qua webhook, nhưng không đọc được "
+            f"getWebhookInfo: {info.get('description', 'Unknown error')}"
+        )
+    else:
+        data = info.get("result", {})
+        url = data.get("url") or "(chưa cấu hình)"
+        pending = data.get("pending_update_count", 0)
+        max_connections = data.get("max_connections")
+        last_error = data.get("last_error_message")
+
+        lines = [
+            "✅ Webhook đang hoạt động — lệnh này vừa được nhận qua webhook.",
+            f"URL: {url}",
+            f"Pending updates: {pending}",
+        ]
+        if max_connections is not None:
+            lines.append(f"Max connections: {max_connections}")
+        if last_error:
+            lines.append(f"Lỗi gần nhất: {last_error}")
+        else:
+            lines.append("Lỗi gần nhất: không có")
+        text = "\n".join(lines)
+
+    await telegram_request(bot_token, "sendMessage", chat_id=chat_id, text=text)
+
+
 async def _json_response(send, data, status=200):
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
     await send(
@@ -181,6 +243,19 @@ async def _handle_webhook(bot_token: str, receive, send):
     chat = message.get("chat", {})
     chat_id = chat.get("id")
     chat_type = chat.get("type")
+
+    try:
+        await ensure_bot_commands(bot_token)
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
+        logger.warning("Không thể đăng ký bot commands: %s", e)
+
+    if _message_command(message) == "/checkwebhook":
+        try:
+            await handle_checkwebhook(bot_token, message)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
+            logger.error("Lỗi khi kiểm tra webhook: %s", e)
+        await _json_response(send, {"ok": True})
+        return
 
     if chat_type not in ("group", "supergroup"):
         await _json_response(send, {"ok": True})
@@ -288,6 +363,8 @@ async def app(scope, receive, send):
         if bot_token:
             webhook_url = f"{_base_url(scope)}/webhook/{bot_token}"
             result = await telegram_request(bot_token, "setWebhook", url=webhook_url)
+            if result.get("ok"):
+                await ensure_bot_commands(bot_token)
             logger.info("Đã đặt webhook cho bot: %s", webhook_url)
             await _json_response(send, result)
             return
