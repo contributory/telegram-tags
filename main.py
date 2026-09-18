@@ -293,3 +293,12 @@ async def app(scope, receive, send):
             return
 
     await _json_response(send, {"detail": "Not Found"}, 404)
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8000")),
+    )
