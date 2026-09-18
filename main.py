@@ -1,10 +1,14 @@
 import asyncio
 import logging
+import os
+import platform
 import random
+import sys
 import time
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,6 +214,31 @@ async def webhook(request: Request, bot_token: str):
 @app.get("/")
 async def root():
     return {"status": "running", "bot": "Telegram Webhook Bot"}
+
+
+@app.get("/os", response_class=PlainTextResponse)
+async def os_info():
+    """Hiển thị thông tin môi trường chạy dưới dạng raw text."""
+    uname = platform.uname()
+    lines = [
+        f"platform    : {platform.platform()}",
+        f"system      : {uname.system}",
+        f"node        : {uname.node}",
+        f"release     : {uname.release}",
+        f"version     : {uname.version}",
+        f"machine     : {uname.machine}",
+        f"processor   : {uname.processor}",
+        f"python      : {sys.version}",
+        f"executable  : {sys.executable}",
+        f"cpu_count   : {os.cpu_count()}",
+        f"cwd         : {os.getcwd()}",
+        f"pid         : {os.getpid()}",
+        "",
+        "env:",
+    ]
+    for key, value in sorted(os.environ.items()):
+        lines.append(f"  {key}={value}")
+    return "\n".join(lines)
 
 
 @app.get("/setwebhook/{bot_token}")
