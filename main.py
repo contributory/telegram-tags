@@ -157,14 +157,12 @@ async def handle_checkwebhook(bot_token: str, message: dict) -> None:
         )
     else:
         data = info.get("result", {})
-        url = data.get("url") or "(chưa cấu hình)"
         pending = data.get("pending_update_count", 0)
         max_connections = data.get("max_connections")
         last_error = data.get("last_error_message")
 
         lines = [
             "✅ Webhook đang hoạt động — lệnh này vừa được nhận qua webhook.",
-            f"URL: {url}",
             f"Pending updates: {pending}",
         ]
         if max_connections is not None:
